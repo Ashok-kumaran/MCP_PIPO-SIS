@@ -1,14 +1,14 @@
-#PIPO to SAP Integration Suite 
+# PIPO to SAP Integration Suite 
 
-## Using Python client and SERVER: mcp-integration-suite
+## Using Python client and ts SERVER: mcp-integration-suite
 
 ## Instructions
 1. Used Python client to connect ts based mcp server
-2. Run : uv run <python client.py> <mcp-server /dist/index.js>
+2. Run : uv run <python client (dot)py > <mcp-server /dist/index (dot) js>
 
 
 App:
-- python client.py
+- python client(dot)py
 - js mcp server
 
 mcp server link: https://github.com/1nbuc/mcp-integration-suite
