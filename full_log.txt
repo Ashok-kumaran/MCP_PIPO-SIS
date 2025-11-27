@@ -1,0 +1,82 @@
+
+MCP Connected! Tools: ['packages', 'package', 'create-package', 'get-iflow', 'create-empty-iflow', 'update-iflow', 'get-iflow-endpoints', 'iflow-image', 'get-deploy-error', 'deploy-iflow', 'get-iflow-configurations', 'get-all-iflows', 'discover-packages', 'list-iflow-examples', 'get-iflow-example', 'send-http-message', 'get-messages', 'count-messages', 'get-messagemapping', 'update-message-mapping', 'deploy-message-mapping', 'create-empty-mapping', 'get-all-messagemappings', 'create-mapping-testiflow', 'list-mapping-examples', 'get-mapping-example', 'get-docs', 'search-docs']
+
+MCP Integration Suite Chatbot Ready. Type 'quit' to exit.
+
+Query: 
+
+[1m> Entering new AgentExecutor chain...[0m
+[32;1m[1;3m
+Invoking: `package` with `{'name': 'mcppipo'}`
+
+
+[0mTraceback (most recent call last):
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\anyio\streams\memory.py", line 111, in receive
+    return self.receive_nowait()
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\anyio\streams\memory.py", line 106, in receive_nowait
+    raise WouldBlock
+anyio.WouldBlock
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Ammu\AppData\Roaming\uv\python\cpython-3.11.13-windows-x86_64-none\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\AppData\Roaming\uv\python\cpython-3.11.13-windows-x86_64-none\Lib\asyncio\base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\main.py", line 597, in main
+    await client.chat_loop()
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\main.py", line 573, in chat_loop
+    answer = await self.process_query(user_input)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\main.py", line 553, in process_query
+    worker_out = await self.worker_agent.ainvoke(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\langchain\chains\base.py", line 220, in ainvoke
+    await self._acall(inputs, run_manager=run_manager)
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\langchain\agents\agent.py", line 1681, in _acall
+    next_step_output = await self._atake_next_step(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\langchain\agents\agent.py", line 1463, in _atake_next_step
+    [
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\langchain\agents\agent.py", line 1463, in <listcomp>
+    [
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\langchain\agents\agent.py", line 1546, in _aiter_next_step
+    result = await asyncio.gather(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\langchain\agents\agent.py", line 1584, in _aperform_agent_action
+    observation = await tool.arun(
+                  ^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\langchain_core\tools\base.py", line 977, in arun
+    response = await coro_with_context(coro, context)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\main.py", line 330, in _arun
+    result = await self.session.call_tool(self.mcp_tool_name, kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\mcp\client\session.py", line 349, in call_tool
+    result = await self.send_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\mcp\shared\session.py", line 274, in send_request
+    response_or_error = await response_stream_reader.receive()
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\.venv\Lib\site-packages\anyio\streams\memory.py", line 119, in receive
+    await receive_event.wait()
+  File "C:\Users\Ammu\AppData\Roaming\uv\python\cpython-3.11.13-windows-x86_64-none\Lib\asyncio\locks.py", line 213, in wait
+    await fut
+asyncio.exceptions.CancelledError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Ammu\OneDrive\Desktop\pipo\mcp-cilent\main.py", line 603, in <module>
+    asyncio.run(main())
+  File "C:\Users\Ammu\AppData\Roaming\uv\python\cpython-3.11.13-windows-x86_64-none\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\Ammu\AppData\Roaming\uv\python\cpython-3.11.13-windows-x86_64-none\Lib\asyncio\runners.py", line 123, in run
+    raise KeyboardInterrupt()
+KeyboardInterrupt
+^C
