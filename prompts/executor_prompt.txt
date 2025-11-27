@@ -1,0 +1,8 @@
+This prompt is used internally by the Executor for reference. Not required to be returned by LLM.
+
+Executor requirements:
+ - Do steps in order.
+ - Validate each step's input with the tool's JSON schema before calling the tool.
+ - For file uploads, create files on disk and pass `filepath` fields to the tool.
+ - If a tool call fails, stop execution and return error + state.
+ - Record outputs in state.history.
