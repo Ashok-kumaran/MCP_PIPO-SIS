@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ifl:IntegrationFlow xmlns:ifl="http://www.sap.com/integrationflow" id="OrderSync15" name="OrderSync15">
+  <ifl:description>HTTPS JSON to XML, call S/4HANA OData V2 to create Order, return success.</ifl:description>
+  <ifl:steps>
+    <ifl:startEvent id="Start"/>
+
+    <ifl:senderChannel id="HTTP_Sender" name="HTTPS Inbound" adapterType="HTTPServer" direction="sender">
+      <ifl:properties>
+        <ifl:property name="allowedMethods" value="POST"/>
+        <ifl:property name="path" value="${endpoint.path}"/>
+        <ifl:property name="contentType" value="application/json"/>
+        <ifl:property name="authType" value="None"/>
+      </ifl:properties>
+    </ifl:senderChannel>
+
+    <ifl:scriptStep id="Map_JSON_to_OData" name="Map JSON to OData XML" language="groovy" ref="src/main/resources/scripts/JsonToOData.groovy"/>
+
+    <ifl:receiverChannel id="S4_ODataV2_Receiver" name="S/4HANA OData V2" adapterType="odatav2" direction="receiver">
+      <ifl:properties>
+        <ifl:property name="serviceUrl" value="https://${sap.s4.host}/sap/opu/odata/sap/${sap.s4.service}"/>
+        <ifl:property name="entitySet" value="${sap.s4.entityset}"/>
+        <ifl:property name="httpMethod" value="POST"/>
+        <ifl:property name="authentication" value="Basic"/>
+        <ifl:property name="username" value="${sap.s4.username}"/>
+        <ifl:property name="password" value="${sap.s4.password}"/>
+        <ifl:property name="timeout" value="${sap.s4.timeout}"/>
+        <ifl:property name="contentType" value="application/atom+xml"/>
+      </ifl:properties>
+      <ifl:requestReply id="Call_S4_OData"/>
+    </ifl:receiverChannel>
+
+    <ifl:contentModifier id="Response_Success" name="Return Success">
+      <ifl:headers>
+        <ifl:header name="Content-Type" value="application/json"/>
+      </ifl:headers>
+      <ifl:body>{"status":"success","message":"Order synchronized"}</ifl:body>
+    </ifl:contentModifier>
+
+    <ifl:endEvent id="End"/>
+  </ifl:steps>
+
+  <ifl:connections>
+    <ifl:connection from="HTTP_Sender" to="Map_JSON_to_OData"/>
+    <ifl:connection from="Map_JSON_to_OData" to="S4_ODataV2_Receiver"/>
+    <ifl:connection from="S4_ODataV2_Receiver" to="Response_Success"/>
+    <ifl:connection from="Response_Success" to="End"/>
+  </ifl:connections>
+</ifl:IntegrationFlow>

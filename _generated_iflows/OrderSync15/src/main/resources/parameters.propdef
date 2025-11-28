@@ -1,0 +1,7 @@
+endpoint.path|Endpoint Path|String|/ordersync15|Path for HTTPS sender endpoint
+sap.s4.host|S/4HANA Host|String||S/4HANA host (e.g. my.s4hana.com)
+sap.s4.service|OData Service|String||OData service name (e.g. ZAPI_SALES_ORDER)
+sap.s4.entityset|Entity Set|String||Entity set to POST (e.g. SalesOrderSet)
+sap.s4.username|S/4HANA Username|String||Basic auth username
+sap.s4.password|S/4HANA Password|Password||Basic auth password
+sap.s4.timeout|S/4HANA Timeout (ms)|Integer|60000|Receiver timeout in milliseconds

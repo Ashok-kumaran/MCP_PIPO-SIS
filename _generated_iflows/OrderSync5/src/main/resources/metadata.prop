@@ -1,0 +1,5 @@
+project.name=OrderSync5
+project.type=IFLOW
+project.version=1.0.0
+project.package=mcppipo
+project.description=Receives HTTPS JSON, converts to XML, creates S/4HANA Sales Order via OData V2, returns JSON response.

@@ -158,21 +158,46 @@ class MCPClient:
     # ======================================================
     async def _build_worker_agent(self):
 
-        worker_prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    (
-                        "You are the WORKER agent for SAP Integration Suite.\n"
-                        "You MUST call tools to answer questions.\n"
-                        "Never invent data. Use only valid tools.\n"
-                        "Your final answers must be based on tool outputs."
-                    ),
-                ),
-                ("human", "{input}"),
-                MessagesPlaceholder("agent_scratchpad"),
-            ]
-        )
+        worker_prompt = ChatPromptTemplate.from_messages([
+            ("system",
+            "You are the WORKER agent for SAP CPI iFlow creation.\n\n"
+            "CRITICAL RULES:\n"
+            "1. NEVER call the same tool twice with identical arguments\n"
+            "2. After seeing 'successfully updated' from update-iflow, STOP immediately\n"
+            "3. Do NOT keep calling update-iflow repeatedly\n"
+            "4. Use the exact BPMN content provided in the context\n"
+            "5. Package IDs must be alphanumeric (no spaces)\n\n"
+
+            "CORRECT update-iflow FORMAT:\n"
+            "{{{{\n"
+            '  \"id\": \"IFlowID\",\n'
+            '  \"files\": [\n'
+            "    {{{{\n"
+            '      \"filepath\": \"src/main/resources/scenarioflows/integrationflow/IFlowID.iflw\",\n'
+            '      \"content\": \"<xml goes here>\"\n'
+            "    }}}}\n"
+            "  ],\n"
+            '  \"autoDeploy\": false\n'
+            "}}}}\n\n"
+
+            "WORKFLOW YOU MUST FOLLOW:\n"
+            "Step 1 → Use `package` tool to check if package exists\n"
+            "  • If 404 / Not Found → create with `create-package`\n"
+            "  • If exists → continue\n\n"
+            "Step 2 → Create empty iFlow using `create-empty-iflow`\n\n"
+            "Step 3 → Update using `update-iflow` (ONLY ONCE!)\n"
+            "  • Use provided BPMN only\n"
+            "  • Stop immediately after success\n\n"
+            "STOPPING RULE:\n"
+            "Once tool output contains: 'successfully updated', STOP and do not call any more tools.\n\n"
+            "IMPORTANT:\n"
+            "- NEVER invent data\n"
+            "- NEVER guess file paths\n"
+            "- Use only tools\n"
+            ),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ])
 
         agent = create_openai_tools_agent(
             llm=self.llm,
@@ -185,7 +210,10 @@ class MCPClient:
             tools=self.agent_tools,
             verbose=True,
             handle_parsing_errors=True,
+            max_iterations=12,
+            early_stopping_method="generate",
         )
+
 
     # ======================================================
     async def process_query(self, query: str):

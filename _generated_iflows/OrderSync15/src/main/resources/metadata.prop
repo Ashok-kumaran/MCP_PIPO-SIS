@@ -1,0 +1,4 @@
+artifact.id=OrderSync15
+artifact.name=OrderSync15
+artifact.type=INTEGRATION_FLOW
+artifact.version=1.0.0

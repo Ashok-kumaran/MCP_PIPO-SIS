@@ -1,0 +1,7 @@
+#name|type|mandatory|default|description
+http.path|string|true|/ordersync5|HTTPS endpoint path
+s4.host|string|true|https://my-s4.example.com|S/4HANA Host (with protocol)
+s4.servicePath|string|true|/sap/opu/odata/sap/API_SALES_ORDER_SRV|OData V2 service path
+s4.client|string|true|100|S/4HANA Client
+s4.credentialAlias|string|true|S4H_BASIC|Credential alias configured in CPI for S/4HANA access
+odata.entitySet|string|true|A_SalesOrder|OData V2 entity set for Sales Order creation

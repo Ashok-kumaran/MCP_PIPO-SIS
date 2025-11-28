@@ -1,0 +1,8 @@
+# Externalized parameters for OrderSync15
+endpoint.path=/ordersync15
+sap.s4.host=
+sap.s4.service=
+sap.s4.entityset=
+sap.s4.username=
+sap.s4.password=
+sap.s4.timeout=60000
