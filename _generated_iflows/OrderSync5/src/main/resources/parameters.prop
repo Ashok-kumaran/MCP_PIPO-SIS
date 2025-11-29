@@ -1,6 +1,0 @@
-http.path=/ordersync5
-s4.host=https://my-s4.example.com
-s4.servicePath=/sap/opu/odata/sap/API_SALES_ORDER_SRV
-s4.client=100
-s4.credentialAlias=S4H_BASIC
-odata.entitySet=A_SalesOrder

@@ -8,4 +8,5 @@ dependencies = [
     "mcp>=1.22.0",
     "python-dotenv>=1.2.1",
     "sap-ai-sdk-gen>=5.8.0",
+    "yaspin>=3.3.0",
 ]
