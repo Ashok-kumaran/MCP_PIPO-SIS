@@ -507,12 +507,13 @@ including:
         raw_answer = worker_out.get("output", worker_out)
 
         # ---- ADD THIS BLOCK ----
-        summary = await self.llm.apredict(f"""
+        summary = await self.llm.ainvoke(f"""
         Here is the MCP tool output from the previous steps:
 
         {raw_answer}
 
         Please explain clearly:
+        - In word say Success or Failed in first line, next lines explain the outcome
         - What actions were performed
         - Which tools were used
         - What the results mean

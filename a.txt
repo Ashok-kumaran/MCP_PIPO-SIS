@@ -1,0 +1,13 @@
+1) Create a CPI iFlow with an HTTPS sender that accepts JSON input, converts it to XML, and sends the final XML file to an SFTP server.
+
+
+2)Create a CPI iFlow that triggers daily using a Timer event, collects all error artifacts from that day, and sends them as an attachment or summary to a recipient email address.
+
+
+3)Create a simple CPI iFlow that picks up a file from an SFTP folder and sends it to a REST API endpoint.
+
+
+4) Create a CPI iFlow that receives JSON via HTTPS, performs value mapping, and sends the result to a REST API
+
+
+5)Create a CPI iFlow that reads incoming emails and saves attachments to an SFTP folder
