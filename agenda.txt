@@ -1,0 +1,7 @@
+1. get details
+
+2. create package
+
+3. create iflow
+
+4. update
