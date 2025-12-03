@@ -3,21 +3,25 @@ import sys
 import os
 import json
 import logging
-from typing import Optional, Any, Type, Union
+from typing import Optional, Any, Type, Union, Dict, List, get_args, get_origin, Literal
 from contextlib import AsyncExitStack
 from dotenv import load_dotenv
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from gen_ai_hub.proxy.langchain.openai import ChatOpenAI
+
 from langchain.agents import AgentExecutor, create_openai_tools_agent
-from pydantic import create_model, BaseModel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.tools import BaseTool
+
 from pydantic import BaseModel, create_model
-from typing import Any, Dict, List, Type, get_args, get_origin
 import re
 from yaspin import yaspin
+
+from langchain.memory import ConversationBufferWindowMemory
+
 
 
 # ==========================================================
@@ -35,7 +39,7 @@ load_dotenv()
 
 
 # ==========================================================
-# SAP GEN AI HUB LLM
+# LLM
 # ==========================================================
 def create_sap_llm():
     deployment_id = os.getenv("LLM_DEPLOYMENT_ID")
@@ -47,18 +51,14 @@ def create_sap_llm():
         temperature=0,
     )
 
-def build_pydantic_model(name: str, schema: Dict, root: Dict = None) -> Any:
-    """
-    Recursively converts MCP JSON schema into a Pydantic model.
-    Supports objects, arrays, enums, oneOf, anyOf, $ref.
-    """
 
+# ==========================================================
+# JSON SCHEMA → PYDANTIC MODEL
+# ==========================================================
+def build_pydantic_model(name: str, schema: Dict, root: Dict = None) -> Any:
     if root is None:
         root = schema
 
-    # ------------------------------------------------------------
-    # $ref support
-    # ------------------------------------------------------------
     if "$ref" in schema:
         ref = schema["$ref"]
         if not ref.startswith("#/"):
@@ -69,17 +69,9 @@ def build_pydantic_model(name: str, schema: Dict, root: Dict = None) -> Any:
             target = target.get(part, {})
         return build_pydantic_model(name, target, root)
 
-    # ------------------------------------------------------------
-    # enums
-    # ------------------------------------------------------------
     if "enum" in schema:
-        from typing import Literal
-        values = tuple(schema["enum"])
-        return Literal[values]
+        return Literal[tuple(schema["enum"])]
 
-    # ------------------------------------------------------------
-    # oneOf / anyOf
-    # ------------------------------------------------------------
     if "oneOf" in schema:
         subs = [build_pydantic_model(f"{name}_oneOf_{i}", s, root) for i, s in enumerate(schema["oneOf"])]
         return Union[tuple(subs)]
@@ -88,33 +80,22 @@ def build_pydantic_model(name: str, schema: Dict, root: Dict = None) -> Any:
         subs = [build_pydantic_model(f"{name}_anyOf_{i}", s, root) for i, s in enumerate(schema["anyOf"])]
         return Union[tuple(subs)]
 
-    # ------------------------------------------------------------
-    # Object
-    # ------------------------------------------------------------
     if schema.get("type") == "object":
         props = schema.get("properties", {}) or {}
         required = schema.get("required", [])
-
         fields = {}
         for key, subschema in props.items():
             field_type = build_pydantic_model(f"{name}_{key}", subschema, root)
             default = ... if key in required else None
             fields[key] = (field_type, default)
-
         safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
         return create_model(safe_name, **fields)
 
-    # ------------------------------------------------------------
-    # Array
-    # ------------------------------------------------------------
     if schema.get("type") == "array":
         item_schema = schema.get("items", {}) or {}
         item_type = build_pydantic_model(f"{name}_item", item_schema, root)
         return List[item_type]
 
-    # ------------------------------------------------------------
-    # Primitive
-    # ------------------------------------------------------------
     if schema.get("type") == "string":
         return str
     if schema.get("type") == "integer":
@@ -124,42 +105,31 @@ def build_pydantic_model(name: str, schema: Dict, root: Dict = None) -> Any:
     if schema.get("type") == "boolean":
         return bool
 
-    # ------------------------------------------------------------
-    # Fallback
-    # ------------------------------------------------------------
     return Any
 
+
 # ==========================================================
-# ASYNC MCP TOOL WRAPPER
+# MCP TOOL WRAPPER
 # ==========================================================
 class MCPAsyncTool(BaseTool):
-    """
-    LangChain tool that calls an MCP tool asynchronously using the SAME event loop.
-    """
-
     name: str
     description: str
     args_schema: Type[BaseModel]
     session: ClientSession
     mcp_tool_name: str
 
-    def _run(self, *args, **kwargs) -> str:
-        raise NotImplementedError("Sync run is not supported; use async.")
+    def _run(self, *args, **kwargs):
+        raise NotImplementedError("Use async.")
 
     async def _arun(self, *args, **kwargs) -> str:
-        logger.info(f"[MCP-TOOL] Executing → {self.mcp_tool_name} | Args = {kwargs}")
+        logger.info(f"[MCP-TOOL] Executing tool={self.mcp_tool_name} args={kwargs}")
 
-        # Spinner around MCP tool execution
         with yaspin(text=f"Running MCP tool: {self.mcp_tool_name}", color="magenta") as sp:
             result = await self.session.call_tool(self.mcp_tool_name, kwargs)
             sp.ok("✔")
 
-        if not result.content:
-            logger.info(f"[MCP-TOOL] {self.mcp_tool_name} returned EMPTY content")
-            return ""
-
         outputs = []
-        for c in result.content:
+        for c in result.content or []:
             if getattr(c, "text", None):
                 outputs.append(c.text)
             elif getattr(c, "json", None):
@@ -167,9 +137,8 @@ class MCPAsyncTool(BaseTool):
             else:
                 outputs.append(str(c))
 
-        logger.info(f"[MCP-TOOL] Final Output ({self.mcp_tool_name}): {outputs}")
-
         return "\n".join(outputs)
+
 
 # ==========================================================
 # MCP CLIENT
@@ -180,19 +149,27 @@ class MCPClient:
         self.session: Optional[ClientSession] = None
 
         self.llm = create_sap_llm()
-        self.agent_tools: list[BaseTool] = []
 
+        self.agent_tools: List[BaseTool] = []
         self.worker_agent: Optional[AgentExecutor] = None
+
+        # NEW AGENTS
+        self.chat_agent = None
+        self.router = None
+
+        # Conversation-only memory
+        # Keep only the last 4 conversational turns
+        self.memory = ConversationBufferWindowMemory(
+            k=4,
+            memory_key="history",
+            return_messages=True
+        )
+
 
     # ------------------------------------------------------
     async def connect_to_server(self, server_script: str):
 
-        if server_script.endswith(".py"):
-            cmd = "python"
-        elif server_script.endswith(".js"):
-            cmd = "node"
-        else:
-            raise ValueError("Server script must be .py or .js")
+        cmd = "python" if server_script.endswith(".py") else "node"
 
         params = StdioServerParameters(command=cmd, args=[server_script])
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(params))
@@ -203,25 +180,27 @@ class MCPClient:
                 ClientSession(self.stdio, self.write)
             )
             sp.ok("✔")
+
         await self.session.initialize()
 
-        await self._build_agent_tools()
-        await self._build_worker_agent()
+        await self._build_agents()
 
         tools = [t.name for t in (await self.session.list_tools()).tools]
         print("\nMCP Connected! Tools:", tools)
-        logger.info(f"[MCP] Connected with tools: {tools}")
+
+    # ======================================================
+    async def _build_agents(self):
+        await self._build_agent_tools()
+        await self._build_worker_agent()
+        await self._build_chat_agent()
+        await self._build_router()
 
     # ======================================================
     async def _build_agent_tools(self):
-
-        assert self.session is not None
         tool_list = await self.session.list_tools()
 
         for tdef in tool_list.tools:
             schema = tdef.inputSchema or {}
-
-            # Build full recursive model
             InputModel = build_pydantic_model(f"{tdef.name}_Input", schema)
 
             tool = MCPAsyncTool(
@@ -231,19 +210,14 @@ class MCPClient:
                 session=self.session,
                 mcp_tool_name=tdef.name,
             )
-
             self.agent_tools.append(tool)
-
-        logger.info(f"[MCP] Loaded {len(self.agent_tools)} tools with recursive schema support.")
 
     # ======================================================
     async def _build_worker_agent(self):
 
         worker_prompt = ChatPromptTemplate.from_messages([
-            ("system",
-
-"""
-You are a specialized assistant for SAP Integration Suite, with a focus on designing, creating, and modifying integration artifacts. You have access to a set of tools that help you interact with SAP Integration Suite.
+            ("system", """ 
+             You are a specialized assistant for SAP Integration Suite, with a focus on designing, creating, and modifying integration artifacts. You have access to a set of tools that help you interact with SAP Integration Suite.
 
 ## Available Capabilities and Components
 
@@ -354,18 +328,8 @@ When working with IFlows, you'll interact with these components:
 
 8. **For testing mappings**, use `create-mapping-testiflow` to create a test IFlow.
 
-When you need help with any integration scenario, I'll guide you through these tools and help you create effective solutions following SAP Integration Suite best practices.
-
-## Getting Help
-If you need assistance or are unsure how to proceed, you have a few options:
-1.  **Search the Documentation:** Use the `search-docs` tool from the `mcp-integration-suite` server to find relevant information. The documentation covers both general SAP Integration Suite topics and specific TPM functionalities.
-2.  **Ask for Help:** If you can't find what you're looking for in the documentation, feel free to ask me directly. I can guide you on how to use the available tools to achieve your goals.
-
 Remember to always think step-by-step and use the tools available to you effectively.
-Do not explore all packages unless a package name is unknown.
-"""
-
-            ),
+Do not explore all packages unless a package name is unknown."""),
             ("human", "{input}"),
             MessagesPlaceholder("agent_scratchpad"),
         ])
@@ -382,59 +346,83 @@ Do not explore all packages unless a package name is unknown.
             verbose=False,
             handle_parsing_errors=True,
             max_iterations=20,
-            early_stopping_method="force",
         )
 
+    # ======================================================
+    async def _build_chat_agent(self):
+        chat_prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "You are a helpful and friendly chatbot. "
+             "Do NOT call MCP tools. Just talk naturally."),
+            MessagesPlaceholder("history"),
+            ("human", "{input}")
+        ])
+
+        self.chat_agent = (chat_prompt | self.llm | StrOutputParser())
+
+    # ======================================================
+    async def _build_router(self):
+        router_prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "You are a router. Decide if the user request requires "
+             "MCP tool usage.\n\n"
+             "If the user wants to create, update, fetch, deploy, packages, iflows, ID, SAP, Integration suite or "
+             "manipulate SAP Integration Suite artifacts → respond ONLY 'TOOL'.\n\n"
+             "If greeting, general questions, or explanation → respond ONLY 'CHAT'."),
+            MessagesPlaceholder("history"),
+            ("human", "{input}")
+        ])
+
+        self.router = router_prompt | self.llm | StrOutputParser()
 
     # ======================================================
     async def process_query(self, query: str):
-
-        logger.info(f"[LLM] User Query: {query}")
-
-        if not self.worker_agent:
-            raise RuntimeError("Worker agent not initialized")
-
-        # Callback for logging which tool LLM selects
-        def log_agent_step(step):
-            if isinstance(step, dict) and "tool" in step:
-                logger.info(
-                    f"[LLM] Selected Tool → {step['tool']} | Args → {step.get('tool_input')}"
-                )
-            return step
+        history = self.memory.load_memory_variables({})["history"]
 
         with yaspin(text="Processing query...", color="yellow") as sp:
-            worker_out = await self.worker_agent.ainvoke(
-                {"input": query},
-                callbacks=[log_agent_step],
-            )
+            # 1️⃣ Decide CHAT vs TOOL
+            decision = await self.router.ainvoke({
+                "input": query,
+                "history": history
+            })
+            decision = decision.strip().upper()
+
+            logger.info(f"[ROUTER] decision={decision}")
+
+            # -----------------------------------
+            # CHAT MODE
+            # -----------------------------------
+            if decision == "CHAT":
+                response = await self.chat_agent.ainvoke({
+                    "input": query,
+                    "history": history
+                })
+                sp.ok("✔")
+                self.memory.save_context({"input": query}, {"output": response})
+                return response
+
+            # -----------------------------------
+            # TOOL MODE
+            # -----------------------------------
+            worker_out = await self.worker_agent.ainvoke({"input": query})
+            raw_answer = worker_out.get("output", worker_out)
+
+            summary = await self.llm.ainvoke(f"""
+            Here is the MCP tool output:
+
+            {raw_answer}
+
+            Create a clear, detailed summary.
+            Provide in formative response to the user based on the above output.
+            Keep it concise and to the point.
+            Do NOT return JSON.
+            """)
+
+            final_answer = str(summary.content)
+
             sp.ok("✔")
-
-
-        raw_answer = worker_out.get("output", worker_out)
-
-        # ---- ADD THIS BLOCK ----
-        summary = await self.llm.ainvoke(f"""
-        Here is the MCP tool output from the previous steps:
-
-        {raw_answer}
-
-        Write a clear natural-language summary for the user.
-        Use simple sentences.
-        Start with “Success:” or “Failed:” depending on what happened.
-
-        Explain:
-        - what you did
-        - which tools were used
-        - what the results mean
-        - what the user can do next
-
-        Do NOT return JSON. Use natural language only.
-        """)
-
-        return str(summary.content) if hasattr(summary, "content") else str(summary)
-
-# ------------------------
-
+            self.memory.save_context({"input": query}, {"output": final_answer})
+            return final_answer
 
     # ======================================================
     async def chat_loop(self):
@@ -465,11 +453,9 @@ async def main():
         print("Usage: python pipo_client.py <server.js|server.py>")
         sys.exit(1)
 
-    server = sys.argv[1]
-
     client = MCPClient()
     try:
-        await client.connect_to_server(server)
+        await client.connect_to_server(sys.argv[1])
         await client.chat_loop()
     finally:
         await client.cleanup()
