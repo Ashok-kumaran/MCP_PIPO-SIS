@@ -2,3 +2,4 @@ sap-ai-sdk-gen
 python-dotenv
 mcp
 yaspin
+deepagents

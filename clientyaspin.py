@@ -17,6 +17,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, create_model
 from typing import Any, Dict, List, Type, get_args, get_origin
 import re
+from yaspin import yaspin
 
 
 # ==========================================================
@@ -148,7 +149,10 @@ class MCPAsyncTool(BaseTool):
     async def _arun(self, *args, **kwargs) -> str:
         logger.info(f"[MCP-TOOL] Executing → {self.mcp_tool_name} | Args = {kwargs}")
 
-        result = await self.session.call_tool(self.mcp_tool_name, kwargs)
+        # Spinner around MCP tool execution
+        with yaspin(text=f"Running MCP tool: {self.mcp_tool_name}", color="magenta") as sp:
+            result = await self.session.call_tool(self.mcp_tool_name, kwargs)
+            sp.ok("✔")
 
         if not result.content:
             logger.info(f"[MCP-TOOL] {self.mcp_tool_name} returned EMPTY content")
@@ -166,7 +170,6 @@ class MCPAsyncTool(BaseTool):
         logger.info(f"[MCP-TOOL] Final Output ({self.mcp_tool_name}): {outputs}")
 
         return "\n".join(outputs)
-
 
 # ==========================================================
 # MCP CLIENT
@@ -195,9 +198,11 @@ class MCPClient:
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(params))
         self.stdio, self.write = stdio_transport
 
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(self.stdio, self.write)
-        )
+        with yaspin(text="Connecting to MCP server...", color="cyan") as sp:
+            self.session = await self.exit_stack.enter_async_context(
+                ClientSession(self.stdio, self.write)
+            )
+            sp.ok("✔")
         await self.session.initialize()
 
         await self._build_agent_tools()
@@ -351,107 +356,13 @@ When working with IFlows, you'll interact with these components:
 
 When you need help with any integration scenario, I'll guide you through these tools and help you create effective solutions following SAP Integration Suite best practices.
 
-
-# SAP Trading Partner Management (TPM) Tools - Start Here
-
-You are a specialized assistant for SAP Trading Partner Management (TPM), designed to help you manage B2B relationships, agreements, and message guidelines. You have access to a set of tools that allow you to interact with the TPM capabilities of SAP Integration Suite.
-
-This server works best in conjunction with the `mcp-integration-suite` server, which can be found at [https://github.com/1nbuc/mcp-integration-suite](https://github.com/1nbuc/mcp-integration-suite). While this server focuses on TPM, the `mcp-integration-suite` server provides the tools for the underlying integration flows and message mappings.
-
-## Important Guidelines
-
-1.  **ALWAYS examine existing data structures first.** Before creating or modifying any artifacts, use the `get-` and `search-` tools to understand the existing configuration. This is crucial for understanding the data structures and avoiding errors. For example, before creating a new agreement, you should examine an existing one to understand the required fields and their formats.
-2.  **All artifacts use GUIDs as IDs**, except for type system IDs. For most artifacts, there is both an ID and a version ID, but the version ID is usually sufficient to uniquely identify the artifact. Only exception is Typing Systems which have no GUID Identifier
-3.  **Use a step-by-step approach**:
-    *   Analyze requirements.
-    *   Check for existing examples of similar artifacts.
-    *   Create/modify the necessary artifacts (e.g., Trading Partner, MIG, Agreement).
-    *   Verify your changes.
-4.  **Be conservative with changes** to existing artifacts - only modify what's needed and preserve the rest.
-5. **Common configuration**
-* A common configuration for partners is a trading partner having a System e.g. partner-orders-system-1. Then there are usually two data identifiers most of the time one in an idoc system and one in an EDI System like EANCOM or TRADACOMs. The idoc identifier referrs to the internal SAP Partner number and the EDI Identifier often is the GLN of the Partner. For configuration of an identifier don't use custom things unless told to. Check get-type-system-identifier-schemes for available schemes. For example GLN is often called GS1. In addition, partners using AS2 must have a signature verification config (create-signature-verify-config) which is used to identify incoming AS2 messages by an AS2 ID. Within the system of the partner there is usually only one Type system registred (most of the time some EDI Type system) and one or multiple communication channels. 
-
-## Available Tools
-
-### Trading Partner Management
-*   `get-partner-metadata`: Get metadata for all trading partners.
-*   `get-partner`: Get partner details by partner id.
-*   `create-trading-partner`: Create a new trading partner.
-*   `get-systems-of-partner`: Returns all systems of a trading partner by its ID.
-*   `create-system`: Create a system for a trading partner.
-*   `get-system-types`: Get available system types.
-*   `create-identifier`: Create a partner Identifier.
-*   `get-qualifiers-codelist`: Get codelist of a qualifier.
-*   `create-communication`: Create a communication channel for a system of a trading partner.
-*   `get-sender-adapters`: Get all sender adapters of trading partner systems.
-*   `get-receiver-adapters`: Get all receiver adapters of trading partner systems.
-*   `create-signature-verify-config`: Create Signature Verification configuration for a partner.
-*   `activate-signature-verify-config`: Activate Signature Verification configuration for a partner.
-*   `get-all-company-profile-metadata`: Get metadata for all company profiles.
-
-### Agreement Management
-*   `get-all-agreement-metadata`: Get metadata for all agreements.
-*   `get-all-agreement-template-metadata`: Get metadata for all agreement templates.
-*   `get-agreement-template`: Get all details for an agreement template.
-*   `create-agreement-with-bound-template`: Create a new B2B agreement which is bound to a template.
-*   `get-agreement-b2b-scenario`: Get the technical B2B scenario of an agreement.
-*   `update-b2b-scenario`: Update an Agreement's B2B Scenario.
-*   `trigger-agreement-activate-or-update-deployment`: Update or deploy an agreement.
-
-### Message Implementation Guideline (MIG) Management
-*   `get-all-mig-latest-metadata`: Get the latest metadata for all Message Implementation Guidelines (MIGs).
-*   `get-mig-raw-by-id`: Get raw MIG content by its version ID.
-*   `get-mig-nodes-xpath`: Get the Nodes of a MIG for a specified XPath.
-*   `get-all-mig-fields`: Get a List of all fields of a MIG.
-*   `get-mig-documentation-entry`: Get the documentation text for a id of a documentation within a mig.
-*   `get-mig-proposal`: Get Proposal for a MIG.
-*   `apply-mig-proposal`: Select fields based on MIG proposal.
-*   `create-mig-draft-all-segments-selected`: Creates a draft MIG from a source version, with all segments and fields pre-selected.
-*   `create-mig`: Create Message implementation guideline based on a type.
-*   `change-mig-field-selection`: Change the selection of MIG fields.
-
-### Mapping Guideline (MAG) Management
-*   `get-all-mags-metadata`: Get an overview of available Mapping guidelines.
-*   `create-mapping-guidelines`: Create a new mapping guidelines.
-*   `test-mag-with-message`: Send a message against a mapping guideline and get the result.
-
-### Monitoring
-*   `search-interchanges`: Search for interchanges/TPM message monitoring based on filter criteria.
-*   `get-interchange-payloads`: Get payload data list for a specific interchange.
-*   `download-interchange-payload`: Download a specific payload by its ID.
-*   `get-interchange-last-error`: Get last error details for a specific message/business document.
-
-### Other
-*   `get-type-systems`: Get available type systems.
-*   `get-type-system-messages`: Get messages of a type system.
-*   `get-type-system-message-full`: Get a message from a type system with all details including versions and revisions.
-*   `create-custom-message`: Create a custom message in typesystem Customer_TS based on XSD.
-*   `get-type-system-identifier-schemes`: Get the possible scheme for identifiers in a type system.
-*   `get-all-business-process-roles`: Get all business process roles.
-*   `get-all-business-processes`: Get all business processes.
-*   `get-all-industry-classifications`: Get all industry classifications.
-*   `get-all-product-classifications`: Get all product classifications.
-*   `get-all-products`: Get all available products/types for a system e.g. SAP SuccessFactors etc.
-*   `get-all-contries-or-regions`: Get all countries or regions.
-
 ## Getting Help
-
 If you need assistance or are unsure how to proceed, you have a few options:
-
 1.  **Search the Documentation:** Use the `search-docs` tool from the `mcp-integration-suite` server to find relevant information. The documentation covers both general SAP Integration Suite topics and specific TPM functionalities.
 2.  **Ask for Help:** If you can't find what you're looking for in the documentation, feel free to ask me directly. I can guide you on how to use the available tools to achieve your goals.
 
-When you need help with any TPM scenario, I'll guide you through these tools and help you create effective solutions following SAP best practices.
-
-##Final Instructions
-At the end of every task, after showing tool output, 
-ALWAYS provide a clear explanation summarizing what happened, 
-including:
-- which tools were executed
-- what the server returned
-- whether the operation succeeded or failed
-- and what the user needs to fix or do next.
-
+Remember to always think step-by-step and use the tools available to you effectively.
+Do not explore all packages unless a package name is unknown.
 """
 
             ),
@@ -491,10 +402,13 @@ including:
                 )
             return step
 
-        worker_out = await self.worker_agent.ainvoke(
-            {"input": query},
-            callbacks=[log_agent_step],
-        )
+        with yaspin(text="Processing query...", color="yellow") as sp:
+            worker_out = await self.worker_agent.ainvoke(
+                {"input": query},
+                callbacks=[log_agent_step],
+            )
+            sp.ok("✔")
+
 
         raw_answer = worker_out.get("output", worker_out)
 
@@ -504,17 +418,21 @@ including:
 
         {raw_answer}
 
-        Please explain clearly:
-        - What actions were performed
-        - Which tools were used
-        - What the results mean
-        - Why any errors occurred
-        - What the user should do next
+        Write a clear natural-language summary for the user.
+        Use simple sentences.
+        Start with “Success:” or “Failed:” depending on what happened.
+
+        Explain:
+        - what you did
+        - which tools were used
+        - what the results mean
+        - what the user can do next
+
+        Do NOT return JSON. Use natural language only.
         """)
 
-        logger.info(f"[LLM] Final Summary: {summary}")
+        return str(summary.content) if hasattr(summary, "content") else str(summary)
 
-        return summary
 # ------------------------
 
 
