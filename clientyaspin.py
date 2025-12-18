@@ -3,7 +3,7 @@ import sys
 import os
 import json
 import logging
-from typing import Optional, Any, Type, Union
+from typing import Optional, Any, Type, Union, Literal, Dict, List
 from contextlib import AsyncExitStack
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
@@ -14,10 +14,7 @@ from pydantic import create_model, BaseModel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, create_model
-from typing import Any, Dict, List, Type, get_args, get_origin
 import re
-from yaspin import yaspin
 
 
 # ==========================================================
@@ -47,7 +44,7 @@ def create_sap_llm():
         temperature=0,
     )
 
-def build_pydantic_model(name: str, schema: Dict, root: Dict = None) -> Any:
+def build_pydantic_model(name: str, schema: Dict, root: Optional[Dict] = None) -> Any:
     """
     Recursively converts MCP JSON schema into a Pydantic model.
     Supports objects, arrays, enums, oneOf, anyOf, $ref.
@@ -149,10 +146,9 @@ class MCPAsyncTool(BaseTool):
     async def _arun(self, *args, **kwargs) -> str:
         logger.info(f"[MCP-TOOL] Executing → {self.mcp_tool_name} | Args = {kwargs}")
 
-        # Spinner around MCP tool execution
-        with yaspin(text=f"Running MCP tool: {self.mcp_tool_name}", color="magenta") as sp:
-            result = await self.session.call_tool(self.mcp_tool_name, kwargs)
-            sp.ok("✔")
+        print(f"Running MCP tool: {self.mcp_tool_name}")
+        result = await self.session.call_tool(self.mcp_tool_name, kwargs)
+        print("Tool executed successfully")
 
         if not result.content:
             logger.info(f"[MCP-TOOL] {self.mcp_tool_name} returned EMPTY content")
@@ -198,11 +194,11 @@ class MCPClient:
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(params))
         self.stdio, self.write = stdio_transport
 
-        with yaspin(text="Connecting to MCP server...", color="cyan") as sp:
-            self.session = await self.exit_stack.enter_async_context(
-                ClientSession(self.stdio, self.write)
-            )
-            sp.ok("✔")
+        print("Connecting to MCP server...")
+        self.session = await self.exit_stack.enter_async_context(
+            ClientSession(self.stdio, self.write)
+        )
+        print("Connected!")
         await self.session.initialize()
 
         await self._build_agent_tools()
@@ -402,15 +398,14 @@ Do not explore all packages unless a package name is unknown.
                 )
             return step
 
-        with yaspin(text="Processing query...", color="yellow") as sp:
-            worker_out = await self.worker_agent.ainvoke(
-                {"input": query},
-                callbacks=[log_agent_step],
-            )
-            sp.ok("✔")
+        print("Processing query...")
+        worker_out = await self.worker_agent.ainvoke(
+            {"input": query},
+            callbacks=[log_agent_step],
+        )
+        print("Query processed")
 
-
-        raw_answer = worker_out.get("output", worker_out)
+        raw_answer = str(worker_out.get("output", ""))
 
         # ---- ADD THIS BLOCK ----
         summary = await self.llm.ainvoke(f"""
