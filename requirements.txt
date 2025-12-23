@@ -2,4 +2,5 @@ sap-ai-sdk-gen
 python-dotenv
 mcp
 yaspin
-deepagents
+xmlschema
+boto3

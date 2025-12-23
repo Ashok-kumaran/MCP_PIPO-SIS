@@ -1,21 +1,23 @@
 import asyncio
 import sys
 import os
+import yaml
 import json
 import logging
-from typing import Optional, Any, Type, Dict
+from typing import Optional, Any, Type, Union, Literal, Dict, List
 from contextlib import AsyncExitStack
 from dotenv import load_dotenv
-
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-
 from gen_ai_hub.proxy.langchain.openai import ChatOpenAI
 from langchain.agents import AgentExecutor, create_openai_tools_agent
-from pydantic import create_model, BaseModel, Field
-
+from pydantic import create_model, BaseModel
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.tools import BaseTool
+import re
+from yaspin import yaspin
+
 
 # ==========================================================
 # LOGGING
@@ -30,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+
 # ==========================================================
 # SAP GEN AI HUB LLM
 # ==========================================================
@@ -43,6 +46,88 @@ def create_sap_llm():
         temperature=0,
     )
 
+def build_pydantic_model(name: str, schema: Dict, root: Optional[Dict] = None) -> Any:
+    """
+    Recursively converts MCP JSON schema into a Pydantic model.
+    Supports objects, arrays, enums, oneOf, anyOf, $ref.
+    """
+
+    if root is None:
+        root = schema
+
+    # ------------------------------------------------------------
+    # $ref support
+    # ------------------------------------------------------------
+    if "$ref" in schema:
+        ref = schema["$ref"]
+        if not ref.startswith("#/"):
+            return Any
+        path = ref[2:].split("/")
+        target = root
+        for part in path:
+            target = target.get(part, {})
+        return build_pydantic_model(name, target, root)
+
+    # ------------------------------------------------------------
+    # enums
+    # ------------------------------------------------------------
+    if "enum" in schema:
+        from typing import Literal
+        values = tuple(schema["enum"])
+        return Literal[values]
+
+    # ------------------------------------------------------------
+    # oneOf / anyOf
+    # ------------------------------------------------------------
+    if "oneOf" in schema:
+        subs = [build_pydantic_model(f"{name}_oneOf_{i}", s, root) for i, s in enumerate(schema["oneOf"])]
+        return Union[tuple(subs)]
+
+    if "anyOf" in schema:
+        subs = [build_pydantic_model(f"{name}_anyOf_{i}", s, root) for i, s in enumerate(schema["anyOf"])]
+        return Union[tuple(subs)]
+
+    # ------------------------------------------------------------
+    # Object
+    # ------------------------------------------------------------
+    if schema.get("type") == "object":
+        props = schema.get("properties", {}) or {}
+        required = schema.get("required", [])
+
+        fields = {}
+        for key, subschema in props.items():
+            field_type = build_pydantic_model(f"{name}_{key}", subschema, root)
+            default = ... if key in required else None
+            fields[key] = (field_type, default)
+
+        safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+        return create_model(safe_name, **fields)
+
+    # ------------------------------------------------------------
+    # Array
+    # ------------------------------------------------------------
+    if schema.get("type") == "array":
+        item_schema = schema.get("items", {}) or {}
+        item_type = build_pydantic_model(f"{name}_item", item_schema, root)
+        return List[item_type]
+
+    # ------------------------------------------------------------
+    # Primitive
+    # ------------------------------------------------------------
+    if schema.get("type") == "string":
+        return str
+    if schema.get("type") == "integer":
+        return int
+    if schema.get("type") == "number":
+        return float
+    if schema.get("type") == "boolean":
+        return bool
+
+    # ------------------------------------------------------------
+    # Fallback
+    # ------------------------------------------------------------
+    return Any
+
 # ==========================================================
 # ASYNC MCP TOOL WRAPPER
 # ==========================================================
@@ -50,6 +135,7 @@ class MCPAsyncTool(BaseTool):
     """
     LangChain tool that calls an MCP tool asynchronously using the SAME event loop.
     """
+
     name: str
     description: str
     args_schema: Type[BaseModel]
@@ -57,14 +143,17 @@ class MCPAsyncTool(BaseTool):
     mcp_tool_name: str
 
     def _run(self, *args, **kwargs) -> str:
-        raise NotImplementedError("Sync run is not supported")
+        raise NotImplementedError("Sync run is not supported; use async.")
 
     async def _arun(self, *args, **kwargs) -> str:
         logger.info(f"[MCP-TOOL] Executing → {self.mcp_tool_name} | Args = {kwargs}")
-        result = await self.session.call_tool(self.mcp_tool_name, kwargs)
+
+        with yaspin(text=f"Running MCP tool: {self.mcp_tool_name}", color="magenta") as sp:
+            result = await self.session.call_tool(self.mcp_tool_name, kwargs)
+            sp.ok("✔")
 
         if not result.content:
-            logger.info(f"[MCP-TOOL] EMPTY result from {self.mcp_tool_name}")
+            logger.info(f"[MCP-TOOL] {self.mcp_tool_name} returned EMPTY content")
             return ""
 
         outputs = []
@@ -76,88 +165,9 @@ class MCPAsyncTool(BaseTool):
             else:
                 outputs.append(str(c))
 
+        logger.info(f"[MCP-TOOL] Final Output ({self.mcp_tool_name}): {outputs}")
+
         return "\n".join(outputs)
-
-# ==========================================================
-# Build + Update IFlow Helper
-# ==========================================================
-async def _build_and_update_iflow(client, iflow_id: str, files: Dict[str, str], autoDeploy: bool = True):
-    """
-    Sends a JSON structure to the MCP server's update-iflow tool.
-    files = { "path/to/file": "content" }
-    """
-    assert client.session is not None, "MCP session not initialized"
-
-    payload = {
-        "id": iflow_id,
-        "files": [{"filepath": path, "content": content} for path, content in files.items()],
-        "autoDeploy": bool(autoDeploy),
-    }
-
-    logger.info("[LOCAL] build_and_update_iflow payload prepared")
-
-
-    # ============================================
-    # SAVE LOCAL COPY OF FILES  (NEW BLOCK)
-    # ============================================
-    local_dir = f"./_generated_iflows/{iflow_id}"
-    os.makedirs(local_dir, exist_ok=True)
-
-    for path, content in files.items():
-        full_path = os.path.join(local_dir, path)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-    logger.info(f"[LOCAL] Saved generated iFlow files → {local_dir}")
-    print(f"\n📁 Local copy saved under: {local_dir}\n")
-
-    result = await client.session.call_tool("update-iflow", payload)
-
-    if not result or not result.content:
-        return {"error": "empty response from update-iflow"}
-
-    for c in result.content:
-        text = getattr(c, "text", None)
-        if text:
-            try:
-                return json.loads(text)
-            except:
-                return {"raw": text}
-
-    return {"raw": str(result)}
-
-# ==========================================================
-# LangChain Tool Wrapper (Local)
-# ==========================================================
-from pydantic import PrivateAttr
-
-class BuildAndUpdateIflowInput(BaseModel):
-    iflow_id: str = Field(..., description="iFlow ID / name")
-    files: Dict[str, str] = Field(..., description="mapping: relative path → content")
-    autoDeploy: bool = Field(True, description="deploy after update")
-
-
-class BuildAndUpdateIflowTool(BaseTool):
-    name: str = "build_and_update_iflow"
-    description: str = (
-        "Build and update a full iFlow by calling the MCP update-iflow tool."
-    )
-    args_schema: Type[BaseModel] = BuildAndUpdateIflowInput
-
-    _client: Any = PrivateAttr()
-
-    def __init__(self, client: "MCPClient"):
-        super().__init__()
-        self._client = client
-
-    def _run(self, *args, **kwargs):
-        raise NotImplementedError("Use async")
-
-    async def _arun(self, iflow_id: str, files: Dict[str, str], autoDeploy: bool = True):
-        return await _build_and_update_iflow(self._client, iflow_id, files, autoDeploy)
-
-
 
 # ==========================================================
 # MCP CLIENT
@@ -166,12 +176,15 @@ class MCPClient:
     def __init__(self):
         self.exit_stack = AsyncExitStack()
         self.session: Optional[ClientSession] = None
+
         self.llm = create_sap_llm()
         self.agent_tools: list[BaseTool] = []
+
         self.worker_agent: Optional[AgentExecutor] = None
 
     # ------------------------------------------------------
     async def connect_to_server(self, server_script: str):
+
         if server_script.endswith(".py"):
             cmd = "python"
         elif server_script.endswith(".js"):
@@ -183,42 +196,31 @@ class MCPClient:
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(params))
         self.stdio, self.write = stdio_transport
 
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(self.stdio, self.write)
-        )
+        with yaspin(text="Connecting to MCP server...", color="cyan") as sp:
+            self.session = await self.exit_stack.enter_async_context(
+                ClientSession(self.stdio, self.write)
+            )
+            sp.ok("✔")
         await self.session.initialize()
 
         await self._build_agent_tools()
-
-        # ADD OUR LOCAL TOOL
-        self.agent_tools.append(BuildAndUpdateIflowTool(self))
-
         await self._build_worker_agent()
 
         tools = [t.name for t in (await self.session.list_tools()).tools]
         print("\nMCP Connected! Tools:", tools)
         logger.info(f"[MCP] Connected with tools: {tools}")
 
-    # ------------------------------------------------------
+    # ======================================================
     async def _build_agent_tools(self):
+
         assert self.session is not None
-        tlist = await self.session.list_tools()
+        tool_list = await self.session.list_tools()
 
-        for tdef in tlist.tools:
-            if tdef.name == "update-iflow":
-                continue  # Skip MCP update-iflow, use local wrapper instead
+        for tdef in tool_list.tools:
             schema = tdef.inputSchema or {}
-            props = schema.get("properties", {}) or {}
-            required = set(schema.get("required", []))
 
-            fields: Dict[str, tuple[Any, Any]] = {}
-            for key in props:
-                if key in required:
-                    fields[key] = (Any, ...)
-                else:
-                    fields[key] = (Any, None)
-
-            InputModel = create_model(f"{tdef.name}_Input", **fields)
+            # Build full recursive model
+            InputModel = build_pydantic_model(f"{tdef.name}_Input", schema)
 
             tool = MCPAsyncTool(
                 name=tdef.name,
@@ -230,102 +232,112 @@ class MCPClient:
 
             self.agent_tools.append(tool)
 
-        logger.info(f"[MCP] Loaded {len(self.agent_tools)} tools")
+        logger.info(f"[MCP] Loaded {len(self.agent_tools)} tools with recursive schema support.")
 
-    # ------------------------------------------------------
+    # ======================================================
     async def _build_worker_agent(self):
+        system_prompt = f"""
+You are a specialized assistant for SAP Integration Suite, with a focus on designing, creating, and modifying integration artifacts. You have access to a set of tools that help you interact with SAP Integration Suite.
 
-        worker_prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """
-You are SAP Integration Suite WORKER Agent.
-STRICT RULES FOR CREATING OR UPDATING IFLOWS:
+## Available Capabilities and Components
 
-You must ALWAYS verify whether an iFlow exists before creating or updating it.
+The SAP Integration Suite provides the following key capabilities:
 
-Allowed tool calls for verification:
-- get-iflow
-- package / packages (if needed to verify package exists)
+1. **Cloud Integration** - For end-to-end process integration across cloud and on-premise applications
+2. **API Management** - For publishing, promoting, and securing APIs
+3. **Event Mesh** - For publishing and consuming business events across applications
+4. **Integration Advisor** - For specifying B2B integration content
+5. **Trading Partner Management** - For managing B2B relationships
+6. **Open Connectors** - For connecting to 150+ non-SAP applications
+7. **Integration Assessment** - For defining integration landscapes
+8. **Other capabilities** including OData Provisioning, Migration Assessment, etc.
 
-1. CORRECT LOGIC:
-- When user asks to create or update an iFlow:
-    First call: get-iflow {{ "id": "<IFLOW_ID>" }}
+## Artifacts within a Package
 
-- If get-iflow returns NOT FOUND (404):
-    - Create the iFlow using:
-        create-empty-iflow {{ package: "<PACKAGE>", name: "<IFLOW_ID>" }}
+An integration package can contain several types of artifacts:
 
-- If the iFlow exists:
-    - Do NOT call create-empty-iflow.
+1. **Integration Flows (IFlows)** - The main artifact type for defining integration scenarios and message processing ✅ IFlow IDs are unique over packages. So if an iflow ID is provided you don't need to fetch packages. You only need a package for creating an iflow**(Supported)**
+2. **Message Mappings** - Define how to transform message formats between sender and receiver ✅ **(Supported)**
+3. **packages** - Abstraction layer to group other artifacts✅ **(Supported)**
+**Note:** Currently, only IFlows, packages and Message Mappings are directly supported by the tools. Other artifacts may be included as part of an IFlow's resources.
 
-- After creation or confirmation:
-    - Generate FULL iFlow files (XML, MANIFEST.MF, .project, metadata, props).
-    - Then call build_and_update_iflow.
+## Available Tools and Functions
 
-- NEVER call build_and_update_iflow without full file dictionary.
+You can access the following tools:
 
+1. **Package Management**
+   - `packages` - Get all integration packages
+   - `package` - Get content of an integration package by name
+   - `create-package` - Create a new integration package
 
-2. Before calling build_and_update_iflow:
-   YOU MUST ALWAYS generate a complete "files" dictionary containing:
-      - scenarioflows XML
-      - MANIFEST.MF
-      - .project
-      - metadata.prop
-      - parameters.prop
-      - parameters.propdef
-      - scripts (if needed)
-   This is MANDATORY.
+2. **Integration Flow (IFlow) Management**
+   - `get-iflow` - Get the data of an IFlow and contained resources
+   - `create-empty-iflow` - Create an empty IFlow
+   - `update-iflow` - Update or create files/content of an IFlow
+   - `get-iflow-endpoints` - Get endpoints of IFlow and its URLs/Protocols
+   - `iflow-image` - Get the IFlow logic shown as a diagram
+   - `deploy-iflow` - Deploy an IFlow
+   - `get-iflow-configurations` - Get all configurations of an IFlow
+   - `get-all-iflows` - Get a list of all available IFlows in a Package
 
-3. NEVER call build_and_update_iflow without the "files" dictionary.
-   If you don't have files, STOP and generate them first.
+3. **Message Mapping Management**
+   - `get-messagemapping` - Get data of a Message Mapping
+   - `update-message-mapping` - Update Message Mapping files/content
+   - `deploy-message-mapping` - Deploy a message-mapping
+   - `create-empty-mapping` - Create an empty message mapping
+   - `get-all-messagemappings` - Get all available message mappings
 
-4. NEVER call tools in this order:
-      list-iflow-examples → build_and_update_iflow
-   This is ALWAYS incorrect.
+4. **Examples and Discovery**
+   - `discover-packages` - Get information about Packages from discover center
+   - `list-iflow-examples` - Get a list of available IFlow examples
+   - `get-iflow-example` - Get an existing IFlow as an example
+   - `list-mapping-examples` - Get all available message mapping examples
+   - `get-mapping-example` - Get an example provided by list-mapping-examples
+   - `create-mapping-testiflow` - Creates an IFlow called if_echo_mapping for testing
 
-5. The workflow must be:
-      (A) Generate files JSON
-      (B) Call build_and_update_iflow with iflow_id, files, autoDeploy=true
-      (C) Wait for tool response
-      (D) Report status to user
+5. **Deployment and Monitoring**
+   - `get-deploy-error` - Get deployment error information
+   - `get-messages` - Get message from message monitoring
+   - `count-messages` - Count messages from the message monitoring. Is useful for making summaries etc.
+   - `send-http-message` - Send an HTTP request to integration suite
 
+## Key IFlow Components
 
-CRITICAL RULES:
-1. ALWAYS generate complete iFlow file contents BEFORE calling build_and_update_iflow,
-   even if the user did not ask for modifications.
-   NEVER call the tool without a 'files' dict.
+When working with IFlows, you'll interact with these components:
 
-2. Generate files in this JSON format first:
-   {{
-     "src/main/resources/scenarioflows/integrationflow/IFLOW_ID.iflw": "<?xml version=...",
-     "META-INF/MANIFEST.MF": "Manifest-Version: 1.0...",
-     ".project": "<?xml version=...",
-     "src/main/resources/metadata.prop": "...",
-     "src/main/resources/parameters.prop": "...",
-     "src/main/resources/parameters.propdef": "..."
-   }}
-3. THEN call build_and_update_iflow with iflow_id (string), files (the dict you just generated), and autoDeploy=true.
-4. The files parameter is REQUIRED - do not call build_and_update_iflow without providing the complete files dict.
-5. Generate realistic SAP CPI iFlow XML with proper namespaces and routing logic.
-6. For HTTPS endpoints, use HTTPServer adapter.
-7. For XML mapping, include proper groovy/XSLT scripts.
-8. For S/4HANA OData calls, use ODataV2 adapter with correct endpoint.
-9. Wait for tool response before confirming deployment success.
-10. Only call build_and_update_iflow when the user requests:
-- create new iflow
-- change iflow
-- update mapping
-- add adapter
-- change logic
-11. Report final status to user.
+1. **Adapters** (for connectivity):
+   - Sender adapters: HTTPS, AMQP, AS2, FTP, SFTP, Mail, etc.
+   - Receiver adapters: HTTP, JDBC, OData, SOAP, AS4, etc.
+
+2. **Message Processing**:
+   - Transformations: Mapping, Content Modifier, Converter
+   - Routing: Router, Multicast, Splitter, Join
+   - External Calls: Request-Reply, Content Enricher
+   - Security: Encryptor, Decryptor, Signer, Verifier
+   - Storage: Data Store Operations, Persist Message
+
+## Important Guidelines
+1. The Correct Workflow
+ - Create the shell: Use the tool create-empty-iflow.
+ - Fetch a reference: Use get-iflow on one of the 3-4 working samples to show the LLM what a valid .iflw XML looks like.
+ - Command a specific update: Tell the chatbot: "Using the XML structure from [Sample IFlow] as a template, rewrite the <bpmn2:process> section to include an HTTPS Sender and an OData Receiver, then use update-iflow to save it."
+2. Required File Structure
+ - If you want the AI to create custom scripts or mappings, you must tell it to place them in the correct SAP-specific folder structure within the iFlow:
+ - iFlow Logic: src/main/resources/scenarioflows/integrationflow/<iflow_id>.iflw
+ - Scripts: src/main/resources/scripts/
+ - Mappings: src/main/resources/mapping/
+
+You are an SAP Integration expert. When I ask for a custom iFlow, first use get-iflow to read a working sample. Then, generate the new XML logic following that exact schema. Finally, use the update-iflow tool to push the changes to src/main/resources/scenarioflows/integrationflow/MyNewFlow.iflw."
+Pro-Tip: If the generation is still messy, use the iflow-image tool (if available in your version) to let the AI "see" the visual representation of what it's building; this often helps the LLM correct the XML coordinates and connections.
+
+ 
 """
-                ),
-                ("human", "{input}"),
-                MessagesPlaceholder("agent_scratchpad"),
-            ]
-        )
+
+        worker_prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", "{input}"),
+            MessagesPlaceholder("agent_scratchpad"),
+        ])
 
         agent = create_openai_tools_agent(
             llm=self.llm,
@@ -336,22 +348,63 @@ CRITICAL RULES:
         self.worker_agent = AgentExecutor(
             agent=agent,
             tools=self.agent_tools,
-            verbose=True,
+            verbose=False,
             handle_parsing_errors=True,
+            max_iterations=20,
+            early_stopping_method="force",
         )
 
-    # ------------------------------------------------------
+
+    # ======================================================
     async def process_query(self, query: str):
+
         logger.info(f"[LLM] User Query: {query}")
 
         if not self.worker_agent:
             raise RuntimeError("Worker agent not initialized")
 
-        worker_out = await self.worker_agent.ainvoke({"input": query})
-        answer = worker_out.get("output", worker_out)
-        return answer
+        # Callback for logging which tool LLM selects
+        def log_agent_step(step):
+            if isinstance(step, dict) and "tool" in step:
+                logger.info(
+                    f"[LLM] Selected Tool → {step['tool']} | Args → {step.get('tool_input')}"
+                )
+            return step
 
-    # ------------------------------------------------------
+        with yaspin(text="Processing query...", color="yellow") as sp:
+            worker_out = await self.worker_agent.ainvoke(
+                {"input": query},
+                callbacks=[log_agent_step],
+            )
+            sp.ok("✔")
+
+        raw_answer = str(worker_out.get("output", ""))
+
+        # ---- ADD THIS BLOCK ----
+        summary = await self.llm.ainvoke(f"""
+        Here is the MCP tool output from the previous steps:
+
+        {raw_answer}
+
+        Write a clear natural-language summary for the user.
+        Use simple sentences.
+        Start with “Success:” or “Failed:” depending on what happened.
+
+        Explain:
+        - what you did
+        - which tools were used
+        - what the results mean
+        - what the user can do next
+
+        Do NOT return JSON. Use natural language only.
+        """)
+
+        return str(summary.content) if hasattr(summary, "content") else str(summary)
+
+# ------------------------
+
+
+    # ======================================================
     async def chat_loop(self):
         print("\nMCP Integration Suite Chatbot Ready. Type 'quit' to exit.\n")
 
@@ -367,17 +420,17 @@ CRITICAL RULES:
                 print("ERROR:", e)
                 logger.exception("ERROR")
 
-    # ------------------------------------------------------
+    # ======================================================
     async def cleanup(self):
         await self.exit_stack.aclose()
 
 
 # ==========================================================
-# MAIN EXECUTION
+# MAIN
 # ==========================================================
 async def main():
     if len(sys.argv) < 2:
-        print("Usage: python main.py <server.js|server.py>")
+        print("Usage: python pipo_client.py <server.js|server.py>")
         sys.exit(1)
 
     server = sys.argv[1]
@@ -388,6 +441,7 @@ async def main():
         await client.chat_loop()
     finally:
         await client.cleanup()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

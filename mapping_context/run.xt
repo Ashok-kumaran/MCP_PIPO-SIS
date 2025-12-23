@@ -1,0 +1,3 @@
+run the test_xsd_context to verify the xml
+
+python -m mapping_context.test_xsd_context

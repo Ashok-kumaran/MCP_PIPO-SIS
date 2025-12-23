@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import os
+import yaml
 import json
 import logging
 from typing import Optional, Any, Type, Union, Literal, Dict, List
@@ -15,6 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.tools import BaseTool
 import re
+from yaspin import yaspin
 
 
 # ==========================================================
@@ -42,6 +44,7 @@ def create_sap_llm():
     return ChatOpenAI(
         deployment_id=deployment_id,
         temperature=0,
+        streaming=False,
     )
 
 def build_pydantic_model(name: str, schema: Dict, root: Optional[Dict] = None) -> Any:
@@ -146,9 +149,9 @@ class MCPAsyncTool(BaseTool):
     async def _arun(self, *args, **kwargs) -> str:
         logger.info(f"[MCP-TOOL] Executing → {self.mcp_tool_name} | Args = {kwargs}")
 
-        print(f"Running MCP tool: {self.mcp_tool_name}")
-        result = await self.session.call_tool(self.mcp_tool_name, kwargs)
-        print("Tool executed successfully")
+        with yaspin(text=f"Running MCP tool: {self.mcp_tool_name}", color="magenta") as sp:
+            result = await self.session.call_tool(self.mcp_tool_name, kwargs)
+            sp.ok("✔")
 
         if not result.content:
             logger.info(f"[MCP-TOOL] {self.mcp_tool_name} returned EMPTY content")
@@ -194,11 +197,11 @@ class MCPClient:
         stdio_transport = await self.exit_stack.enter_async_context(stdio_client(params))
         self.stdio, self.write = stdio_transport
 
-        print("Connecting to MCP server...")
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(self.stdio, self.write)
-        )
-        print("Connected!")
+        with yaspin(text="Connecting to MCP server...", color="cyan") as sp:
+            self.session = await self.exit_stack.enter_async_context(
+                ClientSession(self.stdio, self.write)
+            )
+            sp.ok("✔")
         await self.session.initialize()
 
         await self._build_agent_tools()
@@ -234,13 +237,10 @@ class MCPClient:
 
     # ======================================================
     async def _build_worker_agent(self):
-
-        worker_prompt = ChatPromptTemplate.from_messages([
-            ("system",
-
-"""
+        system_prompt = f"""
 You are a specialized assistant for SAP Integration Suite, with a focus on designing, creating, and modifying integration artifacts. You have access to a set of tools that help you interact with SAP Integration Suite.
-
+- User will give you detailed iflow requirements and you will use the tools to create or modify iflows, message mappings, and packages as needed for creating a new iflow/articfact or modifying an existing one.
+- If user asks for details about SAP Integration Suite, packages, iflows, adapters, or components, provide accurate and concise information based on the knowledge below. If asked briefly summarize the knowledge.
 ## Available Capabilities and Components
 
 The SAP Integration Suite provides the following key capabilities:
@@ -260,10 +260,7 @@ An integration package can contain several types of artifacts:
 
 1. **Integration Flows (IFlows)** - The main artifact type for defining integration scenarios and message processing ✅ IFlow IDs are unique over packages. So if an iflow ID is provided you don't need to fetch packages. You only need a package for creating an iflow**(Supported)**
 2. **Message Mappings** - Define how to transform message formats between sender and receiver ✅ **(Supported)**
-3. **Script Collections** - Reusable scripts that can be referenced in integration scenarios ❌ **(Not currently supported)**
-4. **Data Types** - XML schemas (XSDs) that define the structure of messages ❌ **(Not currently supported, but can be included within IFlows)**
-5. **Message Types** - Definitions based on data types that describe message formats ❌ **(Not currently supported)**
-6. **packages** - Abstraction layer to group other artifacts✅ **(Supported)**
+3. **packages** - Abstraction layer to group other artifacts✅ **(Supported)**
 **Note:** Currently, only IFlows, packages and Message Mappings are directly supported by the tools. Other artifacts may be included as part of an IFlow's resources.
 
 ## Available Tools and Functions
@@ -322,46 +319,24 @@ When working with IFlows, you'll interact with these components:
    - Storage: Data Store Operations, Persist Message
 
 ## Important Guidelines
+1. The Correct Workflow
+ - Create the shell: Use the tool create-empty-iflow.
+ - Fetch a reference: Use get-iflow on one of the 3-4 working samples to show the LLM what a valid .iflw XML looks like.
+ - Command a specific update: Tell the chatbot: "Using the XML structure from [Sample IFlow] as a template, rewrite the <bpmn2:process> section to include an HTTPS Sender and an OData Receiver, then use update-iflow to save it."
+2. Required File Structure
+ - If you want the AI to create custom scripts or mappings, you must tell it to place them in the correct SAP-specific folder structure within the iFlow:
+ - iFlow Logic: src/main/resources/scenarioflows/integrationflow/<iflow_id>.iflw
+ - Scripts: src/main/resources/scripts/
+ - Mappings: src/main/resources/mapping/
 
-1. **ALWAYS examine examples first** when developing solutions. Use `list-iflow-examples` and `get-iflow-example` to study existing patterns before creating new ones.
+You are an SAP Integration expert. When I ask for a custom iFlow, first use get-iflow to read a working sample. Then, generate the new XML logic following that exact schema. Finally, use the update-iflow tool to push the changes to src/main/resources/scenarioflows/integrationflow/MyNewFlow.iflw."
+Pro-Tip: If the generation is still messy, use the iflow-image tool (if available in your version) to let the AI "see" the visual representation of what it's building; this often helps the LLM correct the XML coordinates and connections.
 
-2. **Start with packages and IFlows**. First check existing packages with `packages`, then either use an existing package or create a new one with `create-package`, then create or modify IFlows.
-
-3. **Folder structure matters** in IFlows:
-   - `src/main/resources/` is the root
-   - `src/main/resources/mapping` contains message mappings
-   - `src/main/resources/xsd` contains XSD files
-   - `src/main/resources/scripts` contains scripts
-   - `src/main/resources/scenarioflows/integrationflow/<iflow id>.iflw` contains the IFlow
-
-4. **Use a step-by-step approach**:
-   - Analyze requirements
-   - Check examples
-   - Create/modify package
-   - Create/modify IFlow
-   - Deploy and test
-   - Check for errors
-
-5. **For errors**, use `get-deploy-error` to troubleshoot deployment issues or `get-messages` to investigate runtime issues.
-
-6. **Be conservative with changes** to existing IFlows - only modify what's needed and preserve the rest.
-
-7. **Message mappings typically live within IFlows**. While standalone message mappings exist (`create-empty-mapping`), in most scenarios message mappings are developed directly within the IFlow that uses them. Only create standalone mappings when specifically required.
-
-8. **For testing mappings**, use `create-mapping-testiflow` to create a test IFlow.
-
-When you need help with any integration scenario, I'll guide you through these tools and help you create effective solutions following SAP Integration Suite best practices.
-
-## Getting Help
-If you need assistance or are unsure how to proceed, you have a few options:
-1.  **Search the Documentation:** Use the `search-docs` tool from the `mcp-integration-suite` server to find relevant information. The documentation covers both general SAP Integration Suite topics and specific TPM functionalities.
-2.  **Ask for Help:** If you can't find what you're looking for in the documentation, feel free to ask me directly. I can guide you on how to use the available tools to achieve your goals.
-
-Remember to always think step-by-step and use the tools available to you effectively.
-Do not explore all packages unless a package name is unknown.
+ 
 """
 
-            ),
+        worker_prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
             ("human", "{input}"),
             MessagesPlaceholder("agent_scratchpad"),
         ])
@@ -398,12 +373,12 @@ Do not explore all packages unless a package name is unknown.
                 )
             return step
 
-        print("Processing query...")
-        worker_out = await self.worker_agent.ainvoke(
-            {"input": query},
-            callbacks=[log_agent_step],
-        )
-        print("Query processed")
+        with yaspin(text="Processing query...", color="yellow") as sp:
+            worker_out = await self.worker_agent.ainvoke(
+                {"input": query},
+                callbacks=[log_agent_step],
+            )
+            sp.ok("✔")
 
         raw_answer = str(worker_out.get("output", ""))
 
@@ -469,6 +444,17 @@ async def main():
     finally:
         await client.cleanup()
 
+# ==========================================================
+# HIL
+# ==========================================================
+
+async def run_with_prompt(server: str, prompt: str) -> str:
+    client = MCPClient()
+    try:
+        await client.connect_to_server(server)
+        return await client.process_query(prompt)
+    finally:
+        await client.cleanup()
 
 if __name__ == "__main__":
     asyncio.run(main())

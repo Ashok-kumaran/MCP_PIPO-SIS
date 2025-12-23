@@ -1,0 +1,6 @@
+Create a new iflow called SAPs402 in the package mcptest where an external system sends invoice data to SAP S/4HANA FI using an HTTPS sender adapter.
+The iFlow should start with an HTTPS inbound endpoint that receives invoice-related fields such as InvoiceId, companyCode, and other header data in JSON format.
+Inside the integration process, perform message processing to transform the incoming invoice data into SAP Journal Entry format. This includes mapping the payload to the appropriate JournalEntry structure required by SAP S/4HANA.
+After transformation, send the message to SAP S/4HANA using a SOAP receiver adapter configured for FI Journal Entry posting.
+Additionally, include an Exception Subprocess that is triggered for technical or business errors. The exception subprocess should capture the error details using an Error Handling step and gracefully end the process.
+Ensure the main process ends successfully after the SOAP call if no errors occur.
